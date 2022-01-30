@@ -25,6 +25,7 @@ AUDIO_TYPE_PCM = "application/vnd.mozilla.pcm"
 AUDIO_TYPE_WAV = "audio/wav"
 AUDIO_TYPE_OPUS = "application/vnd.mozilla.opus"
 AUDIO_TYPE_OGG_OPUS = "application/vnd.deepspeech.ogg_opus"
+AUDIO_TYPE_OGG_VORBIS = "application/vnd.deepspeech.ogg_vorbis"
 
 SERIALIZABLE_AUDIO_TYPES = [AUDIO_TYPE_WAV, AUDIO_TYPE_OPUS, AUDIO_TYPE_OGG_OPUS]
 
@@ -83,7 +84,11 @@ class Sample:
             if not self.audio_format:
                 self.audio_format = read_format(audio_type, self.audio)
         else:
-            self.audio = raw_data
+            if audio_type == AUDIO_TYPE_OGG_VORBIS:
+                self.audio_format, self.audio = read_ogg_vorbis_as_np(self.sample_id)
+                self.audio_type = audio_type = AUDIO_TYPE_NP
+            else:
+                self.audio = raw_data
             if self.audio_format is None:
                 raise ValueError(
                     'For audio type "{}" parameter "audio_format" is mandatory'.format(
@@ -171,6 +176,7 @@ def get_loadable_audio_type_from_extension(ext):
     return {
         ".wav": AUDIO_TYPE_WAV,
         ".opus": AUDIO_TYPE_OGG_OPUS,
+        ".ogg": AUDIO_TYPE_OGG_VORBIS,
     }.get(ext, None)
 
 
@@ -505,6 +511,26 @@ def read_wav(wav_file):
         audio_format = read_audio_format_from_wav_file(wav_file_reader)
         pcm_data = wav_file_reader.readframes(wav_file_reader.getnframes())
         return audio_format, pcm_data
+
+
+def read_ogg_vorbis_as_np(filepath):
+    ogg_file = pyogg.VorbisFile(filepath)
+    sample_width = 2  # always 16-bit
+    audio_format = AudioFormat(ogg_file.frequency, ogg_file.channels, sample_width)
+    target_datatype = ctypes.c_short * (ogg_file.buffer_length // sample_width)
+    buffer_as_array = ctypes.cast(ogg_file.buffer, ctypes.POINTER(target_datatype)).contents
+
+    if (ogg_file.channels == 1):
+        audio_data = np.array(buffer_as_array)
+    elif (ogg_file.channels == 2):
+        audio_data = np.array((buffer_as_array[0::2], buffer_as_array[1::2]))
+        # Average multi-channel clips into mono
+        audio_data = np.mean(audio_data, axis=0)
+
+    # Convert to 0.0-1.0 range
+    audio_data = audio_data.astype(np.float32) / np.iinfo(np.int16).max
+    audio_data = np.expand_dims(audio_data, axis=1)
+    return audio_format, audio_data
 
 
 def read_audio(audio_type, audio_file):
